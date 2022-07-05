@@ -53,6 +53,7 @@ public interface MessageService {
 
     MessagePage queryMessageByPage(MessageQuery query);
 
+    MessagePage queryMessageByPageFix(MessageQuery query);
 
 
 

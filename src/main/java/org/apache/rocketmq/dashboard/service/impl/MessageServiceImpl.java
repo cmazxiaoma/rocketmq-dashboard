@@ -18,6 +18,7 @@
 package org.apache.rocketmq.dashboard.service.impl;
 
 
+import com.alibaba.fastjson.JSON;
 import com.google.common.base.Function;
 import com.google.common.base.Predicate;
 import com.google.common.base.Throwables;
@@ -25,6 +26,7 @@ import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.rocketmq.acl.common.AclClientRPCHook;
 import org.apache.rocketmq.acl.common.SessionCredentials;
@@ -129,6 +131,7 @@ public class MessageServiceImpl implements MessageService {
             consumer.start();
             Set<MessageQueue> mqs = consumer.fetchSubscribeMessageQueues(topic);
             for (MessageQueue mq : mqs) {
+                // 二分查找
                 long minOffset = consumer.searchOffset(mq, begin);
                 long maxOffset = consumer.searchOffset(mq, end);
                 READQ:
@@ -226,6 +229,18 @@ public class MessageServiceImpl implements MessageService {
     }
 
     @Override
+    public MessagePage queryMessageByPageFix(MessageQuery query) {
+        MessageQueryByPage queryByPage = new MessageQueryByPage(
+                query.getPageNum(),
+                query.getPageSize(),
+                query.getTopic(),
+                query.getBegin(),
+                query.getEnd());
+        List<MessageView> messageViewList = this.queryMessageByTopic(query.getTopic(), query.getBegin(), query.getEnd());
+        return new MessagePage(new PageImpl<>(messageViewList.stream().skip((long) query.getPageNum() * query.getPageSize()).limit(query.getPageSize()).collect(Collectors.toList())), null);
+    }
+
+    @Override
     public MessagePage queryMessageByPage(MessageQuery query) {
         MessageQueryByPage queryByPage = new MessageQueryByPage(
                 query.getPageNum(),
@@ -234,6 +249,7 @@ public class MessageServiceImpl implements MessageService {
                 query.getBegin(),
                 query.getEnd());
 
+        // 首次加载缓存
         List<QueueOffsetInfo> queueOffsetInfos = CACHE.getIfPresent(query.getTaskId());
 
         if (queueOffsetInfos == null) {
@@ -247,6 +263,42 @@ public class MessageServiceImpl implements MessageService {
         Page<MessageView> messageViews = queryMessageByTaskPage(queryByPage, queueOffsetInfos);
         return new MessagePage(messageViews, query.getTaskId());
 
+    }
+
+    public static void main(String[] args) {
+        MessageQueue messageQueue1 = new MessageQueue("push_one_topic", "broker-a", 0);
+        MessageQueue messageQueue2 = new MessageQueue("push_one_topic", "broker-a", 1);
+        MessageQueue messageQueue3 = new MessageQueue("push_one_topic", "broker-a", 2);
+        MessageQueue messageQueue4 = new MessageQueue("push_one_topic", "broker-a", 3);
+        MessageQueue messageQueue5 = new MessageQueue("push_one_topic", "broker-a", 4);
+
+        Set<MessageQueue> messageQueueSet = Sets.newHashSet();
+        messageQueueSet.add(messageQueue1);
+        messageQueueSet.add(messageQueue2);
+        messageQueueSet.add(messageQueue3);
+        messageQueueSet.add(messageQueue4);
+        messageQueueSet.add(messageQueue5);
+        System.out.println(messageQueueSet);
+
+
+
+        List<QueueOffsetInfo> queueOffsets = Lists.newArrayList(
+                new QueueOffsetInfo(1, 1L, 2L, 1L, 2L, null),
+                new QueueOffsetInfo(1, 10L, 20L, 10L, 20L, null)
+        );
+        List<QueueOffsetInfo> orderQueue = queueOffsets
+                .stream()
+                .sorted((o1, o2) -> {
+                    long size1 = o1.getEnd() - o1.getStart();
+                    long size2 = o2.getEnd() - o2.getStart();
+                    if (size1 < size2) {
+                        return -1;
+                    } else if (size1 > size2) {
+                        return 1;
+                    }
+                    return 0;
+                }).collect(Collectors.toList());
+        System.out.println(JSON.toJSONString(orderQueue));
     }
 
     private MessagePageTask queryFirstMessagePage(MessageQueryByPage query) {
@@ -264,6 +316,7 @@ public class MessageServiceImpl implements MessageService {
 
         try {
             consumer.start();
+            // 16个队列信息
             Collection<MessageQueue> messageQueues = consumer.fetchSubscribeMessageQueues(query.getTopic());
             int idx = 0;
             for (MessageQueue messageQueue : messageQueues) {
@@ -284,6 +337,7 @@ public class MessageServiceImpl implements MessageService {
                         hasData = true;
                         List<MessageExt> msgFoundList = pullResult.getMsgFoundList();
                         for (MessageExt messageExt : msgFoundList) {
+                            // 找到messageExt的storeTimestamp大于等于 begin
                             if (messageExt.getStoreTimestamp() < query.getBegin()) {
                                 start++;
                             } else {
@@ -381,6 +435,16 @@ public class MessageServiceImpl implements MessageService {
 
                 }
             }
+
+            Collections.sort(messageViews, new Comparator<MessageView>() {
+                @Override
+                public int compare(MessageView o1, MessageView o2) {
+                    if (o1.getStoreTimestamp() - o2.getStoreTimestamp() == 0) {
+                        return 0;
+                    }
+                    return (o1.getStoreTimestamp() > o2.getStoreTimestamp()) ? 1 : -1;
+                }
+            });
             PageImpl<MessageView> page = new PageImpl<>(messageViews, query.page(), total);
             return new MessagePageTask(page, queueOffsetInfos);
         } catch (Exception e) {
@@ -449,6 +513,15 @@ public class MessageServiceImpl implements MessageService {
 
                 }
             }
+            Collections.sort(messageViews, new Comparator<MessageView>() {
+                @Override
+                public int compare(MessageView o1, MessageView o2) {
+                    if (o1.getStoreTimestamp() - o2.getStoreTimestamp() == 0) {
+                        return 0;
+                    }
+                    return (o1.getStoreTimestamp() > o2.getStoreTimestamp()) ? 1 : -1;
+                }
+            });
             return new PageImpl<>(messageViews, query.page(), total);
         } catch (Exception e) {
             throw Throwables.propagate(e);
@@ -456,6 +529,7 @@ public class MessageServiceImpl implements MessageService {
             consumer.shutdown();
         }
     }
+
 
     private int moveStartOffset(List<QueueOffsetInfo> queueOffsets, MessageQueryByPage query) {
         int size = queueOffsets.size();
@@ -465,6 +539,7 @@ public class MessageServiceImpl implements MessageService {
             return next;
         }
         // sort by queueOffset size
+        // 从小排到大，通过数据偏移量
         List<QueueOffsetInfo> orderQueue = queueOffsets
                 .stream()
                 .sorted((o1, o2) -> {
@@ -479,7 +554,9 @@ public class MessageServiceImpl implements MessageService {
                 }).collect(Collectors.toList());
 
         // Take the smallest one each time
+        // size =16, offset=20
         for (int i = 0; i < size && offset >= (size - i); i++) {
+            // 10
             long minSize = orderQueue.get(i).getEnd() - orderQueue.get(i).getStartOffset();
             if (minSize == 0) {
                 continue;

@@ -61,7 +61,7 @@ public class MessageController {
     @PostMapping("/queryMessagePageByTopic.query")
     @ResponseBody
     public MessagePage queryMessagePageByTopic(@RequestBody MessageQuery query) {
-        return messageService.queryMessageByPage(query);
+        return messageService.queryMessageByPageFix(query);
     }
 
     @RequestMapping(value = "/queryMessageByTopicAndKey.query", method = RequestMethod.GET)
